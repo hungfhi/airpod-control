@@ -125,6 +125,9 @@ private fun Diagnostics(running: Boolean, @Suppress("UNUSED_PARAMETER") tick: In
                 else -> "Đã nhận ${PodService.packets} gói (${PodService.weak} gói tín hiệu yếu < ${PodService.MIN_RSSI} dBm bị bỏ qua)"
             }
             Text(status, color = fg, fontSize = 14.sp)
+            val types = synchronized(PodService.appleTypes) { PodService.appleTypes.entries.joinToString("  ") { "0x%02X×%d".format(it.key, it.value) } }
+            if (types.isNotEmpty()) Text("Gói Apple theo loại: $types", color = fg, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
+            Text("Pin hệ thống (qua kết nối): ${PodService.sysBatt}", color = fg, fontSize = 13.sp)
             if (p != null) {
                 fun f(v: Int?, c: Boolean) = (v?.let { "$it%" } ?: "--") + if (c) " ⚡" else ""
                 Text("${p.model} · RSSI ${PodService.lastRssi} dBm · ${ago}s trước", fontSize = 14.sp)

@@ -39,6 +39,23 @@ class PodService : Service() {
         @Volatile var lastRssi = 0
         @Volatile var lastAt = 0L          // elapsedRealtime của gói gần nhất
         @Volatile var scanError: String? = null
+        /** Số gói Apple nhận được theo loại (byte đầu): 0x07 = báo pin AirPods, các loại khác của iPhone/Mac/AirTag… */
+        val appleTypes = sortedMapOf<Int, Int>()
+        @Volatile var sysBatt = "chưa thử"     // kết quả đọc pin hệ thống qua getBatteryLevel
+        // Pin "đã biết" của từng phần, nhớ tối đa KNOWN_MS để popup không hiện "--" khi gói mới thiếu dữ liệu
+        const val KNOWN_MS = 15 * 60_000L
+        @Volatile private var kL: Int? = null; @Volatile private var kLAt = 0L
+        @Volatile private var kR: Int? = null; @Volatile private var kRAt = 0L
+        @Volatile private var kC: Int? = null; @Volatile private var kCAt = 0L
+        fun remember(p: Pods) {
+            val now = SystemClock.elapsedRealtime()
+            p.left?.let { kL = it; kLAt = now }; p.right?.let { kR = it; kRAt = now }; p.case?.let { kC = it; kCAt = now }
+        }
+        fun fillKnown(p: Pods): Pods {
+            val now = SystemClock.elapsedRealtime()
+            fun <T> ok(v: T?, at: Long) = v?.takeIf { now - at < KNOWN_MS }
+            return p.copy(left = p.left ?: ok(kL, kLAt), right = p.right ?: ok(kR, kRAt), case = p.case ?: ok(kC, kCAt))
+        }
         /** Nhật ký sự kiện (mới nhất ở đầu), hiển thị ở khung Chẩn đoán. */
         val events = ArrayDeque<String>()
         private val fmt = SimpleDateFormat("HH:mm:ss", Locale.US)
@@ -59,6 +76,7 @@ class PodService : Service() {
     private val btReceiver = object : BroadcastReceiver() {
         @Suppress("MissingPermission")
         override fun onReceive(c: Context, i: Intent) {
+            if (i.action == Intent.ACTION_SCREEN_ON) { restartScan("bật màn hình"); return }
             val dev = IntentCompat.getParcelableExtra(i, BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java) ?: return
             val name = runCatching { dev.name }.getOrNull() ?: "?"
             when (i.action) {
@@ -68,6 +86,7 @@ class PodService : Service() {
                     log("Kết nối Bluetooth: $name${if (apple) "" else " (không phải AirPods, bỏ qua)"}")
                     if (apple) {
                         lastDev = dev; connected = true
+                        restartScan("AirPods kết nối")      // quét mới ngay lúc mở nắp: One UI hay giảm nhịp quét của app nền
                         main.postDelayed({ onAirPodsConnected(name) }, 1_200)   // chờ chút để có gói BLE/pin mới
                         // pin qua kết nối (HFP) thường về sau vài giây => cập nhật popup đang hiện
                         main.postDelayed({ refreshPopup(name) }, 3_500)
@@ -94,11 +113,13 @@ class PodService : Service() {
     private fun bestPods(name: String): Pods {
         val now = SystemClock.elapsedRealtime()
         val ble = lastPods?.takeIf { now - lastAt < 60_000 }
-        return withBt(ble ?: Pods(name, null, null, lastPods?.case, false, false, false, ""))
+        return withBt(fillKnown(ble ?: Pods(lastPods?.model ?: name, null, null, null, false, false, false, "")))
     }
     private fun withBt(p: Pods): Pods {
         if (!connected) return p
-        val bt = maxOf(btBattery, sysBattery(lastDev)).takeIf { it in 0..100 } ?: return p
+        val sys = sysBattery(lastDev)
+        sysBatt = if (sys in 0..100) "$sys%" else "không đọc được"
+        val bt = maxOf(btBattery, sys).takeIf { it in 0..100 } ?: return p
         return p.copy(left = p.left ?: bt, right = p.right ?: bt)
     }
 
@@ -110,7 +131,7 @@ class PodService : Service() {
     private fun refreshPopup(name: String) {
         val p = bestPods(name)
         runCatching { overlay.update(p) }
-        log("Cập nhật pin: trái ${p.left ?: "--"} · phải ${p.right ?: "--"} · hộp ${p.case ?: "--"}")
+        log("Cập nhật pin: trái ${p.left ?: "--"} · phải ${p.right ?: "--"} · hộp ${p.case ?: "--"} (pin hệ thống: $sysBatt)")
     }
     private val restart = object : Runnable {
         @Suppress("MissingPermission")
@@ -124,8 +145,10 @@ class PodService : Service() {
     private val cb = object : ScanCallback() {
         override fun onScanResult(type: Int, r: ScanResult) {
             val d = r.scanRecord?.getManufacturerSpecificData(0x004C) ?: return
+            if (d.isNotEmpty()) synchronized(appleTypes) { val t = d[0].toInt() and 0xFF; appleTypes[t] = (appleTypes[t] ?: 0) + 1 }
             val pods = AirPodsParser.parse(d) ?: return
             packets++; lastRssi = r.rssi; lastAt = SystemClock.elapsedRealtime(); lastPods = pods; scanError = null
+            if (r.rssi >= MIN_RSSI) remember(pods)
             if (r.rssi < MIN_RSSI) { weak++; return }
             Log.d("PodPopup", "rssi=${r.rssi} inCase=${pods.inCase} lid=${pods.lid} raw=${pods.raw}")
             val now = SystemClock.elapsedRealtime()
@@ -140,7 +163,7 @@ class PodService : Service() {
             // Đang đeo (không tai nào trong hộp) => không bao giờ popup, tránh bật nhầm khi tín hiệu chập chờn trong túi
             if (!pods.inCase) return
             if (fresh || lidChanged || backInCase) {
-                if (now - lastPopup > COOLDOWN_MS) { lastPopup = now; main.post { showPopup(withBt(pods)) } }
+                if (now - lastPopup > COOLDOWN_MS) { lastPopup = now; main.post { showPopup(withBt(fillKnown(pods))) } }
                 else log("Bỏ qua: vừa hiện popup < ${COOLDOWN_MS / 1000}s")
             }
         }
@@ -182,6 +205,7 @@ class PodService : Service() {
         if (!receiverOn) {
             val f = IntentFilter().apply {
                 addAction(BluetoothDevice.ACTION_ACL_CONNECTED); addAction(BluetoothDevice.ACTION_ACL_DISCONNECTED); addAction(ACTION_BATTERY)
+                addAction(Intent.ACTION_SCREEN_ON)
             }
             ContextCompat.registerReceiver(this, btReceiver, f, ContextCompat.RECEIVER_EXPORTED)
             receiverOn = true
@@ -191,11 +215,16 @@ class PodService : Service() {
     }
 
     @Suppress("MissingPermission")
+    private fun restartScan(why: String) {
+        scanner?.let { runCatching { it.stopScan(cb) } }; scanner = null; startScan(); log("Quét lại ($why)")
+    }
+
+    @Suppress("MissingPermission")
     private fun startScan() {
         if (scanner != null) return
         scanner = (getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter?.bluetoothLeScanner
         val filter = ScanFilter.Builder().setManufacturerData(
-            0x004C, byteArrayOf(0x07), byteArrayOf(0xFF.toByte())).build()   // mọi gói "proximity pairing" (0x07), mọi độ dài
+            0x004C, ByteArray(0)).build()   // mọi gói Apple (đếm theo loại để chẩn đoán); chỉ loại 0x07 được dùng cho popup
         val s = ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build()
         scanner?.startScan(listOf(filter), s, cb)
         main.removeCallbacks(restart); main.postDelayed(restart, RESTART_MS)
