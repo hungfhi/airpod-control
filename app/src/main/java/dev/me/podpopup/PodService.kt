@@ -9,6 +9,11 @@ import android.content.pm.ServiceInfo
 import android.os.IBinder
 import android.os.SystemClock
 import android.util.Log
+import android.bluetooth.BluetoothDevice
+import android.content.BroadcastReceiver
+import android.content.IntentFilter
+import androidx.core.content.ContextCompat
+import androidx.core.content.IntentCompat
 import android.app.KeyguardManager
 import android.os.Handler
 import android.os.Looper
@@ -23,7 +28,10 @@ class PodService : Service() {
         @Volatile var running = false
         const val QUIET_MS = 3_000L     // im lặng ≥3s rồi thấy lại => coi là lần mở nắp mới
         const val RESTART_MS = 20 * 60_000L  // Android hạ cấp lệnh quét chạy >30 phút => khởi động lại mỗi 20 phút
-        const val COOLDOWN_MS = 4_000L  // không popup 2 lần trong 4s
+        const val COOLDOWN_MS = 6_000L  // không popup 2 lần trong 6s (BLE và sự kiện kết nối có thể cùng báo)
+        // Broadcast ẩn của Android: pin tai nghe gửi qua kết nối (AirPods báo bằng lệnh AT+IPHONEACCEV)
+        private const val ACTION_BATTERY = "android.bluetooth.device.action.BATTERY_LEVEL_CHANGED"
+        private const val EXTRA_BATTERY = "android.bluetooth.device.extra.BATTERY_LEVEL"
         // ---- số liệu chẩn đoán, hiển thị ở màn hình chính ----
         @Volatile var packets = 0          // số gói AirPods nhận được
         @Volatile var weak = 0             // số gói bị bỏ qua vì RSSI < MIN_RSSI
@@ -42,6 +50,39 @@ class PodService : Service() {
     private val main = Handler(Looper.getMainLooper())
     private val overlay by lazy { PopupOverlay(this) }
     private var lastInCase = false
+    private var btBattery = -1
+    private var receiverOn = false
+
+    /** Mở nắp hộp => AirPods đã ghép đôi tự kết nối lại => Android phát ACL_CONNECTED. Dùng làm tín hiệu chính. */
+    private val btReceiver = object : BroadcastReceiver() {
+        @Suppress("MissingPermission")
+        override fun onReceive(c: Context, i: Intent) {
+            val dev = IntentCompat.getParcelableExtra(i, BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java) ?: return
+            val name = runCatching { dev.name }.getOrNull() ?: "?"
+            when (i.action) {
+                BluetoothDevice.ACTION_ACL_CONNECTED -> {
+                    val recentBle = SystemClock.elapsedRealtime() - lastAt < 30_000
+                    val apple = name.contains("AirPods", true) || name.contains("Beats", true) || recentBle
+                    log("Kết nối Bluetooth: $name${if (apple) "" else " (không phải AirPods, bỏ qua)"}")
+                    if (apple) main.postDelayed({ onAirPodsConnected(name) }, 1_200)   // chờ chút để có gói BLE/pin mới
+                }
+                BluetoothDevice.ACTION_ACL_DISCONNECTED -> log("Ngắt kết nối: $name")
+                ACTION_BATTERY -> {
+                    val lvl = i.getIntExtra(EXTRA_BATTERY, -1)
+                    if (lvl in 0..100) { btBattery = lvl; log("Pin qua kết nối ($name): $lvl%") }
+                }
+            }
+        }
+    }
+
+    private fun onAirPodsConnected(name: String) {
+        val now = SystemClock.elapsedRealtime()
+        val ble = lastPods?.takeIf { now - lastAt < 60_000 }
+        val b = btBattery.takeIf { it >= 0 }
+        val p = ble ?: Pods(name, b, b, null, false, false, false, "")
+        if (now - lastPopup > COOLDOWN_MS) { lastPopup = now; log("Mở nắp (theo sự kiện kết nối)"); showPopup(p) }
+        else log("Bỏ qua (kết nối): vừa hiện popup")
+    }
     private val restart = object : Runnable {
         @Suppress("MissingPermission")
         override fun run() { scanner?.stopScan(cb); scanner = null; startScan(); log("Khởi động lại quét (định kỳ 20 phút)") }
@@ -100,6 +141,13 @@ class PodService : Service() {
         val n = Notification.Builder(this, "svc").setContentTitle("PodPopup đang chạy")
             .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth).build()
         startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
+        if (!receiverOn) {
+            val f = IntentFilter().apply {
+                addAction(BluetoothDevice.ACTION_ACL_CONNECTED); addAction(BluetoothDevice.ACTION_ACL_DISCONNECTED); addAction(ACTION_BATTERY)
+            }
+            ContextCompat.registerReceiver(this, btReceiver, f, ContextCompat.RECEIVER_EXPORTED)
+            receiverOn = true
+        }
         startScan(); running = true; log("Bắt đầu theo dõi")
         return START_STICKY
     }
@@ -117,7 +165,9 @@ class PodService : Service() {
 
     @Suppress("MissingPermission")
     override fun onDestroy() {
-        running = false; main.removeCallbacksAndMessages(null); scanner?.stopScan(cb); scanner = null
+        running = false; main.removeCallbacksAndMessages(null)
+        if (receiverOn) { runCatching { unregisterReceiver(btReceiver) }; receiverOn = false }
+        scanner?.stopScan(cb); scanner = null
         runCatching { overlay.hide() }; log("Dừng theo dõi"); super.onDestroy()
     }
     override fun onBind(i: Intent?): IBinder? = null
