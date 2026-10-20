@@ -1,5 +1,7 @@
 name: build-apk
 on: [push, workflow_dispatch]
+permissions:
+  contents: write
 jobs:
   build:
     runs-on: ubuntu-24.04
@@ -22,3 +24,10 @@ jobs:
         with:
           name: PodPopup-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
+      - name: Publish APK to Releases (link tải cố định)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp app/build/outputs/apk/debug/app-debug.apk PodPopup.apk
+          gh release delete latest --yes --cleanup-tag || true
+          gh release create latest PodPopup.apk --title "PodPopup (bản mới nhất)" --notes "Build từ commit ${GITHUB_SHA::7}. Cài trực tiếp file PodPopup.apk trên điện thoại." --latest
