@@ -82,43 +82,58 @@ class PopupActivity : ComponentActivity() {
 /**
  * Popup dạng cửa sổ nổi (overlay), dùng khi app đang chạy nền.
  * Android/One UI hay chặn mở Activity từ nền, còn overlay thì được phép bất cứ lúc nào khi có quyền
- * "Hiển thị trên ứng dụng khác". Cửa sổ chỉ cao bằng thẻ popup, không chặn chạm vào phần còn lại của màn hình.
+ * "Hiển thị trên ứng dụng khác".
+ * Mỗi lần hiện dùng một vòng đời (lifecycle) MỚI và huỷ hẳn khi ẩn: dùng chung một lifecycle giữa các lần
+ * khiến Compose tạm dừng vẽ từ lần thứ hai (nội dung được dựng nhưng không bao giờ vẽ ra màn hình).
  */
-class PopupOverlay(private val ctx: Context) : LifecycleOwner, SavedStateRegistryOwner {
-    private val lifecycleRegistry = LifecycleRegistry(this)
-    private val ssr = SavedStateRegistryController.create(this)
-    override val lifecycle: Lifecycle get() = lifecycleRegistry
-    override val savedStateRegistry: SavedStateRegistry get() = ssr.savedStateRegistry
+class PopupOverlay(private val ctx: Context) {
     private val wm = ctx.getSystemService(WindowManager::class.java)
-    private var view: ComposeView? = null
-    private var pods by mutableStateOf<Pods?>(null)
-    private var token by mutableIntStateOf(0)
+    private var host: Host? = null
 
-    init {
-        ssr.performAttach()
-        ssr.performRestore(null)
-        lifecycleRegistry.currentState = Lifecycle.State.CREATED
+    private inner class Host : LifecycleOwner, SavedStateRegistryOwner {
+        private val reg = LifecycleRegistry(this)
+        private val ssr = SavedStateRegistryController.create(this)
+        override val lifecycle: Lifecycle get() = reg
+        override val savedStateRegistry: SavedStateRegistry get() = ssr.savedStateRegistry
+        var pods by mutableStateOf<Pods?>(null)
+        var token by mutableIntStateOf(0)
+        val view: ComposeView
+        private var drawn = false
+
+        init {
+            ssr.performAttach(); ssr.performRestore(null)
+            reg.currentState = Lifecycle.State.CREATED
+            view = ComposeView(ctx).apply {
+                setViewTreeLifecycleOwner(this@Host)
+                setViewTreeSavedStateRegistryOwner(this@Host)
+                setContent {
+                    val t = token
+                    LaunchedEffect(t) { PodService.log("Popup đã dựng xong trong cửa sổ nổi"); delay(8000); hide() }
+                    Box(
+                        Modifier.fillMaxSize().clickable(remember { MutableInteractionSource() }, null) { hide() },
+                        contentAlignment = Alignment.BottomCenter,
+                    ) { pods?.let { p -> key(t) { PopupCard(p) } } }
+                }
+            }
+            // xác nhận popup thực sự được VẼ lên màn hình (khác với chỉ dựng xong)
+            view.viewTreeObserver.addOnDrawListener {
+                if (!drawn && view.width > 0 && view.height > 0) {
+                    drawn = true
+                    PodService.log("Popup đã vẽ lên màn hình (${view.width}×${view.height}, GPU: ${view.isHardwareAccelerated})")
+                }
+            }
+        }
+        fun start() { reg.currentState = Lifecycle.State.RESUMED }
+        fun destroy() { reg.currentState = Lifecycle.State.DESTROYED }
     }
 
     fun show(p: Pods) {
-        pods = p; token++                       // đang hiện sẵn thì chỉ chạy lại animation
-        if (view != null) return
-        val v = ComposeView(ctx).apply {
-            setViewTreeLifecycleOwner(this@PopupOverlay)
-            setViewTreeSavedStateRegistryOwner(this@PopupOverlay)
-            setContent {
-                val t = token
-                LaunchedEffect(t) { PodService.log("Popup đã dựng xong trong cửa sổ nổi"); delay(8000); hide() }
-                Box(
-                    Modifier.fillMaxSize().clickable(remember { MutableInteractionSource() }, null) { hide() },
-                    contentAlignment = Alignment.BottomCenter,
-                ) { pods?.let { p -> key(t) { PopupCard(p) } } }
-            }
-        }
+        host?.let { it.pods = p; it.token++; return }      // đang hiện sẵn: chỉ chạy lại animation
+        val h = Host().apply { pods = p }
         // Chiều cao cố định bằng thẻ popup: WRAP_CONTENT cho ra cửa sổ cao 0px vì lúc tạo nội dung còn ẩn (chờ animation)
-        val h = (600 * ctx.resources.displayMetrics.density).toInt()
+        val height = (600 * ctx.resources.displayMetrics.density).toInt()
         val lp = WindowManager.LayoutParams(
-            WindowManager.LayoutParams.MATCH_PARENT, h,
+            WindowManager.LayoutParams.MATCH_PARENT, height,
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
@@ -126,18 +141,19 @@ class PopupOverlay(private val ctx: Context) : LifecycleOwner, SavedStateRegistr
                 WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
             PixelFormat.TRANSLUCENT,
         ).apply { gravity = Gravity.BOTTOM }
-        lifecycleRegistry.currentState = Lifecycle.State.RESUMED
-        wm.addView(v, lp)
-        view = v
+        h.start()
+        wm.addView(h.view, lp)
+        host = h
     }
 
     /** Cập nhật số liệu khi popup đang hiện (pin qua kết nối về chậm hơn vài giây), không chạy lại animation. */
-    fun update(p: Pods) { if (view != null) pods = p }
+    fun update(p: Pods) { host?.pods = p }
 
     fun hide() {
-        view?.let { runCatching { wm.removeView(it) } }
-        view = null
-        lifecycleRegistry.currentState = Lifecycle.State.CREATED
+        val h = host ?: return
+        host = null
+        runCatching { wm.removeView(h.view) }
+        h.destroy()
     }
 }
 

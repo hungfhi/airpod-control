@@ -188,6 +188,10 @@ class PodService : Service() {
     }
 
     override fun onStartCommand(i: Intent?, f: Int, id: Int): Int {
+        if (i?.action == "test") {   // nút "Thử popup sau 5 giây" ở màn hình chính
+            log("Thử popup: sẽ hiện sau 5 giây, hãy ra màn hình chính")
+            main.postDelayed({ log("Thử popup ngoài app"); showPopup(bestPods("AirPods")) }, 5_000)
+        }
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(NotificationChannel("svc", "Theo dõi AirPods", NotificationManager.IMPORTANCE_MIN))
         val n = Notification.Builder(this, "svc").setContentTitle("PodPopup đang chạy")

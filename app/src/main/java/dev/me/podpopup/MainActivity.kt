@@ -83,6 +83,9 @@ class MainActivity : ComponentActivity() {
                             startActivity((real ?: Pods("AirPods Pro 2", 80, 90, 60, false, false, true, ""))
                                 .toIntent(Intent(this@MainActivity, PopupActivity::class.java)))
                         }, Modifier.fillMaxWidth().height(52.dp)) { Text(if (real != null) "Xem popup (dữ liệu thật)" else "Xem thử popup (dữ liệu mẫu)") }
+                        if (running) OutlinedButton({
+                            startForegroundService(Intent(this@MainActivity, PodService::class.java).setAction("test"))
+                        }, Modifier.fillMaxWidth().height(52.dp)) { Text("Thử popup sau 5 giây (ra màn hình chính)") }
                         Button({
                             if (running) stopService(svc) else startForegroundService(svc)
                             window.decorView.postDelayed({ tick++ }, 600)
