@@ -127,6 +127,12 @@ private fun Diagnostics(running: Boolean, @Suppress("UNUSED_PARAMETER") tick: In
                 Text("Trong hộp: ${if (p.inCase) "có" else "không"} · bộ đếm nắp: ${p.lid}", color = fg, fontSize = 13.sp)
                 Text(p.raw, color = fg, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
             }
+            val ev = synchronized(PodService.events) { PodService.events.toList() }
+            if (ev.isNotEmpty()) {
+                Spacer(Modifier.height(6.dp))
+                Text("Nhật ký", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                ev.forEach { Text(it, color = fg, fontSize = 12.sp, fontFamily = FontFamily.Monospace) }
+            }
         }
     }
 }

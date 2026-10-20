@@ -1,6 +1,19 @@
 package dev.me.podpopup
 
+import android.content.Context
 import android.content.Intent
+import android.graphics.PixelFormat
+import android.view.Gravity
+import android.view.WindowManager
+import androidx.compose.ui.platform.ComposeView
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.LifecycleRegistry
+import androidx.lifecycle.setViewTreeLifecycleOwner
+import androidx.savedstate.SavedStateRegistry
+import androidx.savedstate.SavedStateRegistryController
+import androidx.savedstate.SavedStateRegistryOwner
+import androidx.savedstate.setViewTreeSavedStateRegistryOwner
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -64,6 +77,61 @@ class PopupActivity : ComponentActivity() {
         }
     }
     override fun onNewIntent(i: Intent) { super.onNewIntent(i); pods = Pods.from(i); token++ }
+}
+
+/**
+ * Popup dạng cửa sổ nổi (overlay), dùng khi app đang chạy nền.
+ * Android/One UI hay chặn mở Activity từ nền, còn overlay thì được phép bất cứ lúc nào khi có quyền
+ * "Hiển thị trên ứng dụng khác". Cửa sổ chỉ cao bằng thẻ popup, không chặn chạm vào phần còn lại của màn hình.
+ */
+class PopupOverlay(private val ctx: Context) : LifecycleOwner, SavedStateRegistryOwner {
+    private val lifecycleRegistry = LifecycleRegistry(this)
+    private val ssr = SavedStateRegistryController.create(this)
+    override val lifecycle: Lifecycle get() = lifecycleRegistry
+    override val savedStateRegistry: SavedStateRegistry get() = ssr.savedStateRegistry
+    private val wm = ctx.getSystemService(WindowManager::class.java)
+    private var view: ComposeView? = null
+    private var pods by mutableStateOf<Pods?>(null)
+    private var token by mutableIntStateOf(0)
+
+    init {
+        ssr.performAttach()
+        ssr.performRestore(null)
+        lifecycleRegistry.currentState = Lifecycle.State.CREATED
+    }
+
+    fun show(p: Pods) {
+        pods = p; token++                       // đang hiện sẵn thì chỉ chạy lại animation
+        if (view != null) return
+        val v = ComposeView(ctx).apply {
+            setViewTreeLifecycleOwner(this@PopupOverlay)
+            setViewTreeSavedStateRegistryOwner(this@PopupOverlay)
+            setContent {
+                val t = token
+                LaunchedEffect(t) { delay(8000); hide() }
+                Box(
+                    Modifier.fillMaxWidth().clickable(remember { MutableInteractionSource() }, null) { hide() },
+                    contentAlignment = Alignment.BottomCenter,
+                ) { pods?.let { p -> key(t) { PopupCard(p) } } }
+            }
+        }
+        val lp = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            PixelFormat.TRANSLUCENT,
+        ).apply { gravity = Gravity.BOTTOM }
+        lifecycleRegistry.currentState = Lifecycle.State.RESUMED
+        wm.addView(v, lp)
+        view = v
+    }
+
+    fun hide() {
+        view?.let { runCatching { wm.removeView(it) } }
+        view = null
+        lifecycleRegistry.currentState = Lifecycle.State.CREATED
+    }
 }
 
 @Composable
