@@ -51,6 +51,8 @@ class PodService : Service() {
     private val overlay by lazy { PopupOverlay(this) }
     private var lastInCase = false
     private var btBattery = -1
+    private var lastDev: BluetoothDevice? = null      // AirPods đang kết nối qua Bluetooth thường
+    private var connected = false
     private var receiverOn = false
 
     /** Mở nắp hộp => AirPods đã ghép đôi tự kết nối lại => Android phát ACL_CONNECTED. Dùng làm tín hiệu chính. */
@@ -64,9 +66,18 @@ class PodService : Service() {
                     val recentBle = SystemClock.elapsedRealtime() - lastAt < 30_000
                     val apple = name.contains("AirPods", true) || name.contains("Beats", true) || recentBle
                     log("Kết nối Bluetooth: $name${if (apple) "" else " (không phải AirPods, bỏ qua)"}")
-                    if (apple) main.postDelayed({ onAirPodsConnected(name) }, 1_200)   // chờ chút để có gói BLE/pin mới
+                    if (apple) {
+                        lastDev = dev; connected = true
+                        main.postDelayed({ onAirPodsConnected(name) }, 1_200)   // chờ chút để có gói BLE/pin mới
+                        // pin qua kết nối (HFP) thường về sau vài giây => cập nhật popup đang hiện
+                        main.postDelayed({ refreshPopup(name) }, 3_500)
+                        main.postDelayed({ refreshPopup(name) }, 7_000)
+                    }
                 }
-                BluetoothDevice.ACTION_ACL_DISCONNECTED -> log("Ngắt kết nối: $name")
+                BluetoothDevice.ACTION_ACL_DISCONNECTED -> {
+                    log("Ngắt kết nối: $name")
+                    if (dev.address == lastDev?.address) { connected = false; btBattery = -1 }
+                }
                 ACTION_BATTERY -> {
                     val lvl = i.getIntExtra(EXTRA_BATTERY, -1)
                     if (lvl in 0..100) { btBattery = lvl; log("Pin qua kết nối ($name): $lvl%") }
@@ -75,13 +86,31 @@ class PodService : Service() {
         }
     }
 
-    private fun onAirPodsConnected(name: String) {
+    /** Pin Android đang lưu cho thiết bị (API ẩn getBatteryLevel, đọc qua reflection). -1 nếu không có. */
+    private fun sysBattery(d: BluetoothDevice?): Int =
+        runCatching { d?.javaClass?.getMethod("getBatteryLevel")?.invoke(d) as? Int }.getOrNull() ?: -1
+
+    /** Dữ liệu tốt nhất hiện có: gói BLE gần nhất + pin qua kết nối điền vào những tai bị thiếu. */
+    private fun bestPods(name: String): Pods {
         val now = SystemClock.elapsedRealtime()
         val ble = lastPods?.takeIf { now - lastAt < 60_000 }
-        val b = btBattery.takeIf { it >= 0 }
-        val p = ble ?: Pods(name, b, b, null, false, false, false, "")
-        if (now - lastPopup > COOLDOWN_MS) { lastPopup = now; log("Mở nắp (theo sự kiện kết nối)"); showPopup(p) }
+        return withBt(ble ?: Pods(name, null, null, lastPods?.case, false, false, false, ""))
+    }
+    private fun withBt(p: Pods): Pods {
+        if (!connected) return p
+        val bt = maxOf(btBattery, sysBattery(lastDev)).takeIf { it in 0..100 } ?: return p
+        return p.copy(left = p.left ?: bt, right = p.right ?: bt)
+    }
+
+    private fun onAirPodsConnected(name: String) {
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastPopup > COOLDOWN_MS) { lastPopup = now; log("Mở nắp (theo sự kiện kết nối)"); showPopup(bestPods(name)) }
         else log("Bỏ qua (kết nối): vừa hiện popup")
+    }
+    private fun refreshPopup(name: String) {
+        val p = bestPods(name)
+        runCatching { overlay.update(p) }
+        log("Cập nhật pin: trái ${p.left ?: "--"} · phải ${p.right ?: "--"} · hộp ${p.case ?: "--"}")
     }
     private val restart = object : Runnable {
         @Suppress("MissingPermission")
@@ -111,7 +140,7 @@ class PodService : Service() {
             // Đang đeo (không tai nào trong hộp) => không bao giờ popup, tránh bật nhầm khi tín hiệu chập chờn trong túi
             if (!pods.inCase) return
             if (fresh || lidChanged || backInCase) {
-                if (now - lastPopup > COOLDOWN_MS) { lastPopup = now; main.post { showPopup(pods) } }
+                if (now - lastPopup > COOLDOWN_MS) { lastPopup = now; main.post { showPopup(withBt(pods)) } }
                 else log("Bỏ qua: vừa hiện popup < ${COOLDOWN_MS / 1000}s")
             }
         }
@@ -140,7 +169,16 @@ class PodService : Service() {
         nm.createNotificationChannel(NotificationChannel("svc", "Theo dõi AirPods", NotificationManager.IMPORTANCE_MIN))
         val n = Notification.Builder(this, "svc").setContentTitle("PodPopup đang chạy")
             .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth).build()
-        startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
+        // Thêm loại "location" để vẫn nhận kết quả quét BLE khi app ở nền (khi đã có quyền vị trí)
+        val loc = checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        try {
+            startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE or
+                (if (loc) ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION else 0))
+            if (!loc) log("Chưa có quyền vị trí: khi ở nền sẽ không nhận được gói BLE")
+        } catch (e: Exception) {
+            startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
+            log("Không bật được chế độ vị trí nền: ${e.message}")
+        }
         if (!receiverOn) {
             val f = IntentFilter().apply {
                 addAction(BluetoothDevice.ACTION_ACL_CONNECTED); addAction(BluetoothDevice.ACTION_ACL_DISCONNECTED); addAction(ACTION_BATTERY)

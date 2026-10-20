@@ -131,6 +131,9 @@ class PopupOverlay(private val ctx: Context) : LifecycleOwner, SavedStateRegistr
         view = v
     }
 
+    /** Cập nhật số liệu khi popup đang hiện (pin qua kết nối về chậm hơn vài giây), không chạy lại animation. */
+    fun update(p: Pods) { if (view != null) pods = p }
+
     fun hide() {
         view?.let { runCatching { wm.removeView(it) } }
         view = null
@@ -171,7 +174,7 @@ private fun PopupCard(p: Pods) {
 private fun Ring(label: String, v: Int?, charging: Boolean, fg: Color, delayMs: Int) {
     if (v == null && label != "Case") return
     var target by remember { mutableFloatStateOf(0f) }
-    LaunchedEffect(Unit) { delay(dl(700)); target = (v ?: 0) / 100f }
+    LaunchedEffect(v) { delay(dl(700)); target = (v ?: 0) / 100f }   // chạy lại khi số liệu được cập nhật
     val prog by animateFloatAsState(target, tween(ms(900), ms(delayMs), FastOutSlowInEasing), label = "ring")
     val col = if (!charging && (v ?: 100) <= 20) Color(0xFFFF453A) else Color(0xFF30D158)
     Column(horizontalAlignment = Alignment.CenterHorizontally) {

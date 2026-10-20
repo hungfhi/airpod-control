@@ -50,6 +50,8 @@ class MainActivity : ComponentActivity() {
                     val ask = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { tick++ }
                     val t = tick
                     val permOk = perms.all { checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED }
+                    val askBg = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { tick++ }
+                    val bgOk = checkSelfPermission(Manifest.permission.ACCESS_BACKGROUND_LOCATION) == PackageManager.PERMISSION_GRANTED
                     val running = PodService.running
                     val svc = Intent(this@MainActivity, PodService::class.java)
                     Column(Modifier.verticalScroll(rememberScrollState()).statusBarsPadding().navigationBarsPadding().padding(20.dp),
@@ -59,13 +61,16 @@ class MainActivity : ComponentActivity() {
                         Text("Popup pin AirPods kiểu iPhone", color = MaterialTheme.colorScheme.onSurfaceVariant)
                         Spacer(Modifier.height(12.dp))
                         Step(1, "Quyền Bluetooth, vị trí & thông báo", permOk) { ask.launch(perms) }
+                        // Android chỉ cho xin "mọi lúc" sau khi đã có quyền vị trí thường (bước 1)
+                        Step(2, "Vị trí: chọn \"Cho phép mọi lúc\"", bgOk) {
+                            if (permOk) askBg.launch(Manifest.permission.ACCESS_BACKGROUND_LOCATION) else ask.launch(perms) }
                         val locOn = getSystemService(LocationManager::class.java).isLocationEnabled
-                        Step(2, "Bật Vị trí (cần để quét Bluetooth)", locOn) {
+                        Step(3, "Bật Vị trí (cần để quét Bluetooth)", locOn) {
                             startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS)) }
-                        Step(3, "Hiển thị trên ứng dụng khác", Settings.canDrawOverlays(ctx)) {
+                        Step(4, "Hiển thị trên ứng dụng khác", Settings.canDrawOverlays(ctx)) {
                             startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))) }
                         val batteryOk = getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(packageName)
-                        Step(4, "Pin → Không hạn chế", batteryOk) {
+                        Step(5, "Pin → Không hạn chế", batteryOk) {
                             // Chưa miễn tối ưu pin: hỏi trực tiếp. Đã miễn: mở trang ứng dụng để chọn "Không hạn chế" của One UI
                             if (!batteryOk) startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName")))
                             else startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName"))) }
