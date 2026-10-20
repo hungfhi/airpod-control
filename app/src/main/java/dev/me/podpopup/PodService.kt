@@ -16,6 +16,13 @@ class PodService : Service() {
         @Volatile var running = false
         const val QUIET_MS = 10_000L    // im lặng ≥10s rồi thấy lại => coi là lần mở nắp mới
         const val COOLDOWN_MS = 4_000L  // không popup 2 lần trong 4s
+        // ---- số liệu chẩn đoán, hiển thị ở màn hình chính ----
+        @Volatile var packets = 0          // số gói AirPods nhận được
+        @Volatile var weak = 0             // số gói bị bỏ qua vì RSSI < MIN_RSSI
+        @Volatile var lastPods: Pods? = null
+        @Volatile var lastRssi = 0
+        @Volatile var lastAt = 0L          // elapsedRealtime của gói gần nhất
+        @Volatile var scanError: String? = null
     }
     private var lastSeen = 0L
     private var lastPopup = 0L
@@ -24,9 +31,10 @@ class PodService : Service() {
 
     private val cb = object : ScanCallback() {
         override fun onScanResult(type: Int, r: ScanResult) {
-            if (r.rssi < MIN_RSSI) return
             val d = r.scanRecord?.getManufacturerSpecificData(0x004C) ?: return
             val pods = AirPodsParser.parse(d) ?: return
+            packets++; lastRssi = r.rssi; lastAt = SystemClock.elapsedRealtime(); lastPods = pods; scanError = null
+            if (r.rssi < MIN_RSSI) { weak++; return }
             Log.d("PodPopup", "rssi=${r.rssi} inCase=${pods.inCase} lid=${pods.lid} raw=${pods.raw}")
             val now = SystemClock.elapsedRealtime()
             val fresh = now - lastSeen > QUIET_MS
@@ -40,6 +48,7 @@ class PodService : Service() {
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP))
             }
         }
+        override fun onScanFailed(errorCode: Int) { scanError = "Lỗi quét Bluetooth (mã $errorCode)"; scanner = null }
     }
 
     override fun onStartCommand(i: Intent?, f: Int, id: Int): Int {
@@ -57,7 +66,7 @@ class PodService : Service() {
         if (scanner != null) return
         scanner = (getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter?.bluetoothLeScanner
         val filter = ScanFilter.Builder().setManufacturerData(
-            0x004C, byteArrayOf(0x07, 0x19), byteArrayOf(0xFF.toByte(), 0xFF.toByte())).build()
+            0x004C, byteArrayOf(0x07), byteArrayOf(0xFF.toByte())).build()   // mọi gói "proximity pairing" (0x07), mọi độ dài
         val s = ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build()
         scanner?.startScan(listOf(filter), s, cb)
     }
