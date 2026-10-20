@@ -108,18 +108,22 @@ class PopupOverlay(private val ctx: Context) : LifecycleOwner, SavedStateRegistr
             setViewTreeSavedStateRegistryOwner(this@PopupOverlay)
             setContent {
                 val t = token
-                LaunchedEffect(t) { delay(8000); hide() }
+                LaunchedEffect(t) { PodService.log("Popup đã dựng xong trong cửa sổ nổi"); delay(8000); hide() }
                 Box(
-                    Modifier.fillMaxWidth().clickable(remember { MutableInteractionSource() }, null) { hide() },
+                    Modifier.fillMaxSize().clickable(remember { MutableInteractionSource() }, null) { hide() },
                     contentAlignment = Alignment.BottomCenter,
                 ) { pods?.let { p -> key(t) { PopupCard(p) } } }
             }
         }
+        // Chiều cao cố định bằng thẻ popup: WRAP_CONTENT cho ra cửa sổ cao 0px vì lúc tạo nội dung còn ẩn (chờ animation)
+        val h = (600 * ctx.resources.displayMetrics.density).toInt()
         val lp = WindowManager.LayoutParams(
-            WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.MATCH_PARENT, h,
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                // cửa sổ thêm từ Service mặc định vẽ bằng CPU => ảnh HARDWARE bitmap không hiện; bật tăng tốc GPU
+                WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
             PixelFormat.TRANSLUCENT,
         ).apply { gravity = Gravity.BOTTOM }
         lifecycleRegistry.currentState = Lifecycle.State.RESUMED
