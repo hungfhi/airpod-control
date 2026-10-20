@@ -20,6 +20,7 @@ class PodService : Service() {
     private var lastSeen = 0L
     private var lastPopup = 0L
     private var lastLid = -1
+    private var scanner: BluetoothLeScanner? = null
 
     private val cb = object : ScanCallback() {
         override fun onScanResult(type: Int, r: ScanResult) {
