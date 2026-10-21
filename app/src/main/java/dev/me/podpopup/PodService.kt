@@ -140,6 +140,7 @@ class PodService : Service() {
     }
     private var lastSeen = 0L
     private var lastPopup = 0L
+    private var lastLive = 0L
     private var lastLid = -1
     private var scanner: BluetoothLeScanner? = null
 
@@ -150,6 +151,12 @@ class PodService : Service() {
             val pods = AirPodsParser.parse(d) ?: return
             packets++; lastRssi = r.rssi; lastAt = SystemClock.elapsedRealtime(); lastPods = pods; scanError = null
             if (r.rssi >= MIN_RSSI) remember(pods)
+            // Pin theo thời gian thực: popup đang hiện thì cập nhật số từ mỗi gói mới (tối đa ~3 lần/giây)
+            val t = SystemClock.elapsedRealtime()
+            if (r.rssi >= MIN_RSSI && t - lastLive > 300) {
+                lastLive = t
+                main.post { if (overlay.showing) overlay.update(withBt(fillKnown(pods))) }
+            }
             if (r.rssi < MIN_RSSI) { weak++; return }
             Log.d("PodPopup", "rssi=${r.rssi} inCase=${pods.inCase} lid=${pods.lid} raw=${pods.raw}")
             val now = SystemClock.elapsedRealtime()
@@ -230,8 +237,15 @@ class PodService : Service() {
         if (scanner != null) return
         scanner = (getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter?.bluetoothLeScanner
         val filter = ScanFilter.Builder().setManufacturerData(
-            0x004C, ByteArray(0)).build()   // mọi gói Apple (đếm theo loại để chẩn đoán); chỉ loại 0x07 được dùng cho popup
-        val s = ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build()
+            0x004C, byteArrayOf(0x07), byteArrayOf(0xFF.toByte())).build()   // chỉ gói báo pin AirPods (0x07): ít nhiễu => One UI không giảm nhịp
+        // Chế độ nhạy nhất: báo từng gói ngay lập tức, khớp cả tín hiệu yếu, không gộp kết quả
+        val s = ScanSettings.Builder()
+            .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+            .setCallbackType(ScanSettings.CALLBACK_TYPE_ALL_MATCHES)
+            .setMatchMode(ScanSettings.MATCH_MODE_AGGRESSIVE)
+            .setNumOfMatches(ScanSettings.MATCH_NUM_MAX_ADVERTISEMENT)
+            .setReportDelay(0)
+            .build()
         scanner?.startScan(listOf(filter), s, cb)
         main.removeCallbacks(restart); main.postDelayed(restart, RESTART_MS)
     }

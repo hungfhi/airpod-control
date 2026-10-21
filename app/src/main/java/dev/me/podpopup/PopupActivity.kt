@@ -160,6 +160,7 @@ class PopupOverlay(private val ctx: Context) {
 
     /** Cập nhật số liệu khi popup đang hiện (pin qua kết nối về chậm hơn vài giây), không chạy lại animation. */
     fun update(p: Pods) { host?.pods = p }
+    val showing: Boolean get() = host != null
 
     fun hide() {
         val h = host ?: return
