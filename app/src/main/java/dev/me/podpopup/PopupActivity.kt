@@ -55,6 +55,18 @@ import kotlin.math.floor
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
+/** Giữ sẵn 24 frame hộp (HARDWARE bitmap, nằm trên GPU) để mỗi lần mở popup không phải giải mã lại. */
+object FrameCache {
+    @Volatile var frames: List<ImageBitmap>? = null
+        private set
+    fun load(ctx: Context): List<ImageBitmap> = frames ?: synchronized(this) {
+        frames ?: run {
+            val opt = BitmapFactory.Options().apply { inPreferredConfig = Bitmap.Config.HARDWARE; inScaled = false }
+            HeroMeta.FRAMES.map { BitmapFactory.decodeResource(ctx.resources, it, opt).asImageBitmap() }.also { frames = it }
+        }
+    }
+}
+
 /** Hệ số làm chậm animation: 1 = gốc, 2 = chậm gấp đôi. Lò xo: độ cứng chia SLOW² để thời gian dài gấp SLOW. */
 private const val SLOW = 1.6f
 private fun ms(v: Int) = (v * SLOW).toInt()
@@ -213,12 +225,9 @@ private fun PodsHero(p: Pods) {
     val hasCase = p.case != null
     val ctx = LocalContext.current
     // Decode trước toàn bộ frame ở background (HARDWARE bitmap: nằm trên GPU, không tốn heap) để animation không giật
-    val frames by produceState<List<ImageBitmap>?>(null, hasCase) {
-        if (!hasCase) { value = emptyList(); return@produceState }
-        value = withContext(Dispatchers.IO) {
-            val opt = BitmapFactory.Options().apply { inPreferredConfig = Bitmap.Config.HARDWARE; inScaled = false }
-            HeroMeta.FRAMES.map { BitmapFactory.decodeResource(ctx.resources, it, opt).asImageBitmap() }
-        }
+    // Ảnh hộp đã được dịch vụ giải mã sẵn (FrameCache) => có ngay, không phải chờ
+    val frames by produceState(if (hasCase) FrameCache.frames else emptyList(), hasCase) {
+        if (value == null) value = withContext(Dispatchers.IO) { FrameCache.load(ctx.applicationContext) }
     }
     val ready = frames != null
     val open = remember { Animatable(if (hasCase) 0f else 1f) }

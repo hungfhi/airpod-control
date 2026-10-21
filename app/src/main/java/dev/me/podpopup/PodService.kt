@@ -87,7 +87,8 @@ class PodService : Service() {
                     if (apple) {
                         lastDev = dev; connected = true
                         restartScan("AirPods kết nối")      // quét mới ngay lúc mở nắp: One UI hay giảm nhịp quét của app nền
-                        main.postDelayed({ onAirPodsConnected(name) }, 1_200)   // chờ chút để có gói BLE/pin mới
+                        main.post { onAirPodsConnected(name) }   // hiện ngay; số liệu tự cập nhật bên dưới
+                        main.postDelayed({ refreshPopup(name) }, 1_500)
                         // pin qua kết nối (HFP) thường về sau vài giây => cập nhật popup đang hiện
                         main.postDelayed({ refreshPopup(name) }, 3_500)
                         main.postDelayed({ refreshPopup(name) }, 7_000)
@@ -215,6 +216,7 @@ class PodService : Service() {
             receiverOn = true
         }
         startScan(); running = true; log("Bắt đầu theo dõi")
+        Thread { FrameCache.load(applicationContext) }.start()   // giải mã sẵn ảnh hộp để popup mở nắp ngay
         return START_STICKY
     }
 
